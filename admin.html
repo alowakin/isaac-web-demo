@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Staff Dashboard | Papillion Family Medicine</title>
+  <link rel="icon" href="img/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="admin-page">
+  <div class="demo-banner"><strong>Staff dashboard preview</strong> · in production this sits behind a secure login</div>
+  <header class="site-header">
+    <nav class="container nav" aria-label="Main">
+      <a class="brand" href="index.html"><img src="img/logo.png" alt="" width="46" height="46"><span class="brand-name">Papillion Family Medicine<small>Staff dashboard</small></span></a>
+      <div class="nav-cta"><a class="btn btn-ghost" href="book.html">Open booking page</a></div>
+    </nav>
+  </header>
+
+  <main class="container admin-wrap">
+    <div class="admin-head">
+      <div><span class="eyebrow">Front desk</span><h2 style="margin:0">Good <span id="greet">day</span> 👋</h2></div>
+      <button class="btn btn-ghost" id="resetBtn">Reset demo data</button>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" role="tab" aria-selected="true" data-tab="appts">Online bookings</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="sched">Doctor availability</button>
+    </div>
+
+    <section class="tab-panel active" id="tab-appts" role="tabpanel">
+      <div class="card" style="margin-bottom:24px;padding:22px 26px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+          <div><h3 style="margin:0 0 4px">How online booking works</h3><p style="margin:0;color:var(--muted);font-size:.9rem" id="modeHelp"></p></div>
+          <div class="radio-row" role="radiogroup" aria-label="Booking mode">
+            <label class="radio-pill"><input type="radio" name="mode" value="request"><span>Request · staff confirm</span></label>
+            <label class="radio-pill"><input type="radio" name="mode" value="instant"><span>Instant booking</span></label>
+          </div>
+        </div>
+      </div>
+      <div class="kpis">
+        <div class="kpi" style="border:2px solid var(--pink)"><small>Waiting to confirm</small><b id="kPending" style="color:var(--crimson)">0</b></div>
+        <div class="kpi"><small>Booked online</small><b id="kTotal">0</b></div>
+        <div class="kpi"><small>New patients</small><b id="kNew">0</b></div>
+        <div class="kpi"><small>Next 7 days</small><b id="kWeek">0</b></div>
+        <div class="kpi"><small>Phone calls saved (est.)</small><b id="kCalls">0</b></div>
+      </div>
+      <div class="card">
+        <h3>Upcoming online appointments</h3>
+        <div class="table-wrap"><table class="data"><thead><tr><th>Date &amp; time</th><th>Patient</th><th>Visit</th><th>Provider</th><th>Insurance</th><th></th></tr></thead><tbody id="apptRows"></tbody></table></div>
+        <div class="empty" id="noAppts" style="margin-top:12px">No online bookings yet. <a href="book.html">Make a test booking →</a></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-sched" role="tabpanel">
+      <p class="lead" style="margin-bottom:22px">Turn days and half-days on or off and add vacation days. Changes appear on the booking page immediately.</p>
+      <div class="provider-sched" id="schedList"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="js/data.js"></script>
+  <script>
+  (function () {
+    const P = window.PFM, { util } = P;
+    const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+    const DAYS = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+    const h = new Date().getHours();
+    $("#greet").textContent = h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
+
+    function toast(m) { const t = $("#toast"); t.textContent = m; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2200); }
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    // Time-off helpers: normalise to sorted ranges, label them
+    const ranges = (p) => p.timeOff.map((t) => typeof t === "string" ? { start: t, end: t, note: "" } : t).sort((a, b) => a.start.localeCompare(b.start));
+    const short = (d) => util.parseYmd(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const rangeLabel = (t) => t.start === t.end ? util.parseYmd(t.start).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) : `${short(t.start)} – ${short(t.end)}`;
+    const dayCount = (t) => { const n = Math.round((util.parseYmd(t.end) - util.parseYmd(t.start)) / 864e5) + 1; return `${n} day${n > 1 ? "s" : ""}`; };
+
+    // Tabs
+    $$(".tab").forEach((t) => t.addEventListener("click", () => {
+      $$(".tab").forEach((x) => { x.classList.toggle("active", x === t); x.setAttribute("aria-selected", x === t); });
+      $$(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
+    }));
+
+    // Appointments
+    function renderAppts() {
+      const now = util.ymd(new Date());
+      const list = [...P.state.bookings].filter((b) => b.date >= now).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start) || a.start - b.start);
+      const in7 = util.ymd(new Date(Date.now() + 7 * 864e5));
+      $("#kPending").textContent = list.filter((b) => b.status === "requested").length;
+      $("#kTotal").textContent = P.state.bookings.length;
+      $("#kNew").textContent = P.state.bookings.filter((b) => b.patientType === "new").length;
+      $("#kWeek").textContent = list.filter((b) => b.date <= in7).length;
+      $("#kCalls").textContent = P.state.bookings.length;
+      $("#noAppts").style.display = list.length ? "none" : "block";
+      $("#apptRows").innerHTML = list.map((b) => `<tr>
+        <td><strong>${util.parseYmd(b.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</strong><br><span style="color:var(--muted)">${util.fmtTime(b.start)}</span>${P.isOff(P.provider(b.providerId), b.date) ? '<br><span class="badge new">Doctor off · reschedule</span>' : ""}</td>
+        <td>${esc(b.patient.first)} ${esc(b.patient.last)} ${b.patientType === "new" ? '<span class="badge new">New</span>' : ""}<br><span style="color:var(--muted);font-size:.85rem">${esc(b.patient.phone)}</span></td>
+        <td>${P.visit(b.visitId).name}</td><td>${P.provider(b.providerId).name}</td><td>${esc(b.insurance)}</td>
+        <td style="white-space:nowrap">${b.status === "requested"
+          ? `<span class="badge new">Request</span><br><button class="link-btn" style="color:var(--success)" data-confirm="${b.id}">Confirm</button> <button class="link-btn" data-cancel="${b.id}">Decline</button>`
+          : `<span class="badge">Confirmed</span><br><button class="link-btn" data-cancel="${b.id}">Cancel</button>`}</td></tr>`).join("");
+      $$("[data-confirm]").forEach((btn) => btn.addEventListener("click", () => {
+        const b = P.state.bookings.find((x) => x.id === btn.dataset.confirm);
+        b.status = "confirmed"; P.save(); renderAppts();
+        toast(`Confirmed. ${b.patient.first} would get a confirmation ${b.remind === "Email" ? "email" : "text"}.`);
+      }));
+      $$("[data-cancel]").forEach((btn) => btn.addEventListener("click", () => {
+        P.state.bookings = P.state.bookings.filter((b) => b.id !== btn.dataset.cancel); P.save(); renderAppts(); toast("Appointment cancelled. Time slot reopened.");
+      }));
+    }
+
+    // Schedules
+    function renderSched() {
+      $("#schedList").innerHTML = P.state.providers.map((p) => `
+        <article class="sched-card" data-p="${p.id}">
+          <header>
+            <div class="avatar">${p.initials}</div>
+            <div class="grow"><h3>${p.name}</h3><span style="color:var(--muted);font-size:.88rem">${p.title}</span></div>
+            <div class="field" style="min-width:150px"><label>Slot length</label>
+              <select data-k="slot">${[15, 20, 30].map((m) => `<option value="${m}" ${p.slotMinutes === m ? "selected" : ""}>${m} minutes</option>`).join("")}</select></div>
+            <label class="consent" style="align-self:center"><input type="checkbox" data-k="new" ${p.acceptingNew ? "checked" : ""}><span>Accepting new patients</span></label>
+          </header>
+          <div class="days">${[1, 2, 3, 4, 5].map((d) => { const w = p.week[d]; return `
+            <div class="day${w.on ? "" : " off"}" data-d="${d}">
+              <label class="toggle">${DAYS[d]}<input type="checkbox" data-k="on" ${w.on ? "checked" : ""}></label>
+              <div class="blocks">
+                <label><input type="checkbox" data-k="am" ${w.am ? "checked" : ""}> 8:30 AM – 12:00</label>
+                <label><input type="checkbox" data-k="pm" ${w.pm ? "checked" : ""}> 1:00 – 4:30 PM</label>
+              </div></div>`; }).join("")}</div>
+          <h4 style="margin:22px 0 0;color:var(--navy)">Time off &amp; vacation</h4>
+          <div class="timeoff">
+            <div class="field"><label for="from-${p.id}">From</label><input id="from-${p.id}" type="date" data-k="offfrom" min="${util.ymd(new Date())}"></div>
+            <div class="field"><label for="to-${p.id}">To <span style="font-weight:400;color:var(--muted)">(same day = 1 day off)</span></label><input id="to-${p.id}" type="date" data-k="offto" min="${util.ymd(new Date())}"></div>
+            <div class="field"><label for="note-${p.id}">Reason <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+              <select id="note-${p.id}" data-k="offnote"><option>Vacation</option><option>Conference</option><option>Sick day</option><option>Personal</option><option>Other</option></select></div>
+            <button class="btn btn-navy" data-k="addoff">Add time off</button>
+          </div>
+          <div class="chips">${ranges(p).map((t, i) => `<span class="chip">${t.note ? `<b>${esc(t.note)}</b> · ` : ""}${rangeLabel(t)} (${dayCount(t)})<button aria-label="Remove time off ${rangeLabel(t)}" data-rm="${i}">×</button></span>`).join("") || '<span style="color:var(--muted);font-size:.85rem">No time off scheduled.</span>'}</div>
+        </article>`).join("");
+
+      $$(".sched-card").forEach((card) => {
+        const p = P.provider(card.dataset.p);
+        card.addEventListener("change", (e) => {
+          const k = e.target.dataset.k, day = e.target.closest(".day");
+          if (k === "offfrom") {
+            const to = $('[data-k="offto"]', card);
+            to.min = e.target.value;
+            if (!to.value || to.value < e.target.value) to.value = e.target.value;
+            return;
+          }
+          if (k === "slot") p.slotMinutes = +e.target.value;
+          else if (k === "new") p.acceptingNew = e.target.checked;
+          else if (day && ["on", "am", "pm"].includes(k)) {
+            const w = p.week[day.dataset.d]; w[k] = e.target.checked;
+            if (k === "on" && w.on && !w.am && !w.pm) { w.am = w.pm = true; }
+            if (!w.am && !w.pm) w.on = false;
+          } else return;
+          P.save(); renderSched(); toast(`${p.name}'s schedule updated`);
+        });
+        card.addEventListener("click", (e) => {
+          if (e.target.dataset.k === "addoff") {
+            const start = $('[data-k="offfrom"]', card).value;
+            const end = $('[data-k="offto"]', card).value || start;
+            const note = $('[data-k="offnote"]', card).value;
+            if (!start) return toast("Pick a start date first");
+            if (end < start) return toast("The end date is before the start date");
+            p.timeOff = ranges(p);
+            p.timeOff.push({ start, end, note });
+            P.save(); renderSched();
+            const clash = P.state.bookings.filter((b) => b.providerId === p.id && b.date >= start && b.date <= end).length;
+            toast(clash
+              ? `Time off added. ${clash} booked patient${clash > 1 ? "s" : ""} need${clash > 1 ? "" : "s"} to be rescheduled (see Online bookings).`
+              : `Time off added (${dayCount({ start, end })}). Online booking is blocked for those dates.`);
+            renderAppts();
+          } else if (e.target.dataset.rm !== undefined) {
+            const list = ranges(p); list.splice(+e.target.dataset.rm, 1);
+            p.timeOff = list; P.save(); renderSched(); renderAppts(); toast("Time off removed. Those dates are bookable again.");
+          }
+        });
+      });
+    }
+
+    // Booking mode switch
+    const MODE_HELP = {
+      request: "Patients choose a preferred time, which is held for them. Your staff call to confirm, so a real person is always involved.",
+      instant: "Patients book an open time directly and get confirmed right away. Least work for the front desk.",
+    };
+    function renderMode() {
+      const m = P.state.settings.mode;
+      $$('input[name="mode"]').forEach((r) => { r.checked = r.value === m; });
+      $("#modeHelp").textContent = MODE_HELP[m];
+    }
+    $$('input[name="mode"]').forEach((r) => r.addEventListener("change", () => {
+      P.state.settings.mode = r.value; P.save(); renderMode();
+      toast(r.value === "request" ? "Switched to request mode: staff confirm each booking" : "Switched to instant booking");
+    }));
+
+    $("#resetBtn").addEventListener("click", () => { if (confirm("Reset all demo bookings and schedules?")) { P.reset(); renderMode(); renderAppts(); renderSched(); toast("Demo data reset"); } });
+    renderMode();
+    renderAppts(); renderSched();
+  })();
+  </script>
+</body>
+</html>
